@@ -137,6 +137,9 @@ async function seed() {
       console.log(`   - ${h.name} (${h.totalCapacity} ліжок, ${h.distance} км, завантаж. ${h.currentLoad}/${h.totalCapacity})`);
     }
 
+    await User.findByIdAndUpdate(doctorUser._id, { hospital: hospitals[0]._id });
+    await User.findByIdAndUpdate(medicUser._id, { hospital: hospitals[1]._id });
+
     // ============================
     // Дані для 10 карток поранених (B1–B10)
     // ============================

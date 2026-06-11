@@ -33,6 +33,11 @@ const userSchema = new mongoose.Schema(
     rank: {
       type: String,
       trim: true
+    },
+    hospital: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Hospital',
+      default: null
     }
   },
   {

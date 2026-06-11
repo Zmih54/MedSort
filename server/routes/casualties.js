@@ -1,9 +1,52 @@
 const express = require('express');
 const CasualtyCard = require('../models/CasualtyCard');
+const Hospital = require('../models/Hospital');
 const { auth, authorize } = require('../middleware/auth');
 const { runTriageForPatient } = require('../services/triageAHP');
 
 const router = express.Router();
+
+function normalizeHospitalId(value) {
+  if (!value) return null;
+
+  if (typeof value === 'object') {
+    return String(value._id || value);
+  }
+
+  return String(value);
+}
+
+function getDoctorHospitalId(user) {
+  if (!user || user.role !== 'doctor') return null;
+
+  const hospitalValue = user.hospital;
+  if (!hospitalValue) return null;
+
+  return normalizeHospitalId(hospitalValue);
+}
+
+function getDoctorAccessFilter(user) {
+  if (!user || user.role !== 'doctor') return null;
+
+  const doctorHospitalId = getDoctorHospitalId(user);
+  if (!doctorHospitalId) {
+    return { _id: { $in: [] } };
+  }
+
+  return { assignedHospital: doctorHospitalId };
+}
+
+function canAccessCasualtyForDoctor(user, casualty) {
+  if (!user || user.role !== 'doctor') return true;
+
+  const doctorHospitalId = getDoctorHospitalId(user);
+  if (!doctorHospitalId) return false;
+
+  const assignedHospitalId = normalizeHospitalId(casualty?.assignedHospital);
+  if (!assignedHospitalId) return false;
+
+  return assignedHospitalId === doctorHospitalId;
+}
 
 // Усі маршрути захищені аутентифікацією
 router.use(auth);
@@ -32,6 +75,11 @@ router.get('/', async (req, res) => {
     } = req.query;
 
     const filter = {};
+
+    const doctorAccessFilter = getDoctorAccessFilter(req.user);
+    if (doctorAccessFilter) {
+      Object.assign(filter, doctorAccessFilter);
+    }
 
     if (status) {
       filter.status = status;
@@ -94,25 +142,30 @@ router.get('/', async (req, res) => {
  */
 router.get('/stats', async (req, res) => {
   try {
+    const doctorHospitalFilter = getDoctorAccessFilter(req.user) || {};
+
     const [
       totalCount,
       byTriage,
       byStatus,
       byDate
     ] = await Promise.all([
-      CasualtyCard.countDocuments(),
+      CasualtyCard.countDocuments(doctorHospitalFilter),
 
       CasualtyCard.aggregate([
+        ...(req.user.role === 'doctor' ? [{ $match: doctorHospitalFilter }] : []),
         { $group: { _id: '$triageCategory', count: { $sum: 1 } } },
         { $sort: { _id: 1 } }
       ]),
 
       CasualtyCard.aggregate([
+        ...(req.user.role === 'doctor' ? [{ $match: doctorHospitalFilter }] : []),
         { $group: { _id: '$status', count: { $sum: 1 } } },
         { $sort: { _id: 1 } }
       ]),
 
       CasualtyCard.aggregate([
+        ...(req.user.role === 'doctor' ? [{ $match: doctorHospitalFilter }] : []),
         {
           $group: {
             _id: {
@@ -171,6 +224,13 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Картку пораненого не знайдено'
+      });
+    }
+
+    if (!canAccessCasualtyForDoctor(req.user, casualty)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Цю картку не можна переглядати: пацієнт направлений до іншої лікарні'
       });
     }
 
@@ -413,6 +473,25 @@ router.put('/:id/assign-hospital', async (req, res) => {
         success: false,
         message: 'Картку пораненого не знайдено'
       });
+    }
+
+    const previousHospitalId = casualty.assignedHospital
+      ? String(casualty.assignedHospital)
+      : null;
+    const newHospitalId = String(hospitalId);
+
+    if (previousHospitalId !== newHospitalId) {
+      const updates = [];
+      if (previousHospitalId) {
+        updates.push(
+          Hospital.updateOne(
+            { _id: previousHospitalId, currentLoad: { $gt: 0 } },
+            { $inc: { currentLoad: -1 } }
+          )
+        );
+      }
+      updates.push(Hospital.updateOne({ _id: newHospitalId }, { $inc: { currentLoad: 1 } }));
+      await Promise.all(updates);
     }
 
     casualty.assignedHospital = hospitalId;

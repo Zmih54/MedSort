@@ -1,6 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Hospital = require('../models/Hospital');
 const { auth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -16,13 +17,34 @@ function generateToken(userId) {
   });
 }
 
+function serializeUser(user) {
+  const raw = user && typeof user.toObject === 'function' ? user.toObject() : user;
+  return {
+    _id: raw._id,
+    name: raw.name,
+    email: raw.email,
+    role: raw.role,
+    rank: raw.rank,
+    hospital: raw.hospital && typeof raw.hospital === 'object'
+      ? {
+          _id: raw.hospital._id,
+          name: raw.hospital.name,
+          location: raw.hospital.location
+        }
+      : raw.hospital
+        ? { _id: raw.hospital }
+        : null,
+    createdAt: raw.createdAt
+  };
+}
+
 /**
  * POST /api/auth/register
  * Реєстрація нового користувача.
  */
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password, role, rank } = req.body;
+    const { name, email, password, role, rank, hospitalId } = req.body;
 
     // Перевірка обов'язкових полів
     if (!name || !email || !password) {
@@ -30,6 +52,23 @@ router.post('/register', async (req, res) => {
         success: false,
         message: "Ім'я, email та пароль є обов'язковими"
       });
+    }
+
+    if (role === 'doctor' && !hospitalId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Для лікаря обов’язково вказати лікарню'
+      });
+    }
+
+    if (role === 'doctor') {
+      const hospital = await Hospital.findById(hospitalId);
+      if (!hospital) {
+        return res.status(404).json({
+          success: false,
+          message: 'Вказану лікарню не знайдено'
+        });
+      }
     }
 
     // Перевірка чи користувач вже існує
@@ -47,24 +86,21 @@ router.post('/register', async (req, res) => {
       email: email.toLowerCase(),
       password,
       role: role || 'combat_medic',
-      rank
+      rank,
+      hospital: role === 'doctor' ? hospitalId : null
     });
 
+    const savedUser = await User.findById(user._id).populate('hospital', '_id name location');
+
     // Генерація токена
-    const token = generateToken(user._id);
+    const token = generateToken(savedUser._id);
 
     res.status(201).json({
       success: true,
       message: 'Користувача успішно зареєстровано',
       data: {
         token,
-        user: {
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          rank: user.rank
-        }
+        user: serializeUser(savedUser)
       }
     });
   } catch (error) {
@@ -105,7 +141,9 @@ router.post('/login', async (req, res) => {
     }
 
     // Знаходимо користувача з паролем
-    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase() })
+      .select('+password')
+      .populate('hospital', '_id name location');
 
     if (!user) {
       return res.status(401).json({
@@ -132,13 +170,7 @@ router.post('/login', async (req, res) => {
       message: 'Вхід виконано успішно',
       data: {
         token,
-        user: {
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          rank: user.rank
-        }
+        user: serializeUser(user)
       }
     });
   } catch (error) {
@@ -156,7 +188,7 @@ router.post('/login', async (req, res) => {
  */
 router.get('/me', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).populate('hospital', '_id name location');
 
     if (!user) {
       return res.status(404).json({
@@ -168,14 +200,7 @@ router.get('/me', auth, async (req, res) => {
     res.json({
       success: true,
       data: {
-        user: {
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          rank: user.rank,
-          createdAt: user.createdAt
-        }
+        user: serializeUser(user)
       }
     });
   } catch (error) {
@@ -194,7 +219,7 @@ router.get('/me', auth, async (req, res) => {
  */
 router.get('/users', auth, async (req, res) => {
   try {
-    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    const users = await User.find().select('-password').populate('hospital', '_id name location').sort({ createdAt: -1 });
     res.json(users);
   } catch (error) {
     console.error('Помилка отримання списку користувачів:', error);

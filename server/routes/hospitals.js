@@ -175,6 +175,42 @@ router.put('/:id', async (req, res) => {
 });
 
 /**
+ * DELETE /api/hospitals/:id
+ * Видалення госпіталю (тільки адміністратор).
+ */
+router.delete('/:id', authorize('admin'), async (req, res) => {
+  try {
+    const hospital = await Hospital.findById(req.params.id);
+
+    if (!hospital) {
+      return res.status(404).json({
+        success: false,
+        message: 'Госпіталь не знайдено'
+      });
+    }
+
+    // Знімаємо прив'язку лікарні з усіх карток поранених
+    await CasualtyCard.updateMany(
+      { assignedHospital: req.params.id },
+      { $unset: { assignedHospital: '' } }
+    );
+
+    await Hospital.findByIdAndDelete(req.params.id);
+
+    res.json({
+      success: true,
+      message: 'Госпіталь видалено'
+    });
+  } catch (error) {
+    if (error.kind === 'ObjectId') {
+      return res.status(400).json({ success: false, message: 'Невірний формат ID' });
+    }
+    console.error('Помилка видалення госпіталю:', error);
+    res.status(500).json({ success: false, message: 'Помилка сервера' });
+  }
+});
+
+/**
  * POST /api/hospitals/recommend
  * Рекомендація госпіталів для конкретного пораненого.
  *
